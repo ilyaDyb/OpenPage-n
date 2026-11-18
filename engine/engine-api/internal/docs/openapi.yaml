@@ -1,0 +1,287 @@
+openapi: 3.1.0
+info:
+  title: ОпенПейч Engine API
+  version: 1.0.0
+  description: Внутренний API регистрации проектов и наблюдений за HEAD ветки openpage.
+servers:
+  - url: /
+tags:
+  - name: Регистрация проектов
+    description: Регистрация технических проектов.
+  - name: Наблюдения за исходниками
+    description: Получение активных проектов и отправка наблюдений за веткой.
+paths:
+  /internal/v1/projects:
+    post:
+      tags: [Регистрация проектов]
+      operationId: registerProject
+      summary: Зарегистрировать технический проект
+      description: >
+        UUID выдаёт платформа ОпенПейч. При повторной регистрации API сравнивает repo_url
+        и enabled с сохранённой конфигурацией. URL проверяется синтаксически.
+      security:
+        - PlatformBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectRegistration'
+            example:
+              id: 0812951a-c377-4045-8c09-83595bd5222d
+              repo_url: https://github.com/ratcker/openpage-sandbox.git
+      responses:
+        '200':
+          $ref: '#/components/responses/ProjectState'
+          description: Проект с такой конфигурацией уже существует.
+        '201':
+          description: Проект создан.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Project'
+              example:
+                id: 0812951a-c377-4045-8c09-83595bd5222d
+                repo_url: https://github.com/ratcker/openpage-sandbox.git
+                observed_sha: null
+                observed_revision: 0
+        '400':
+          description: Некорректный JSON, UUID или URL репозитория.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                malformed:
+                  value: {error: invalid JSON request}
+                invalidProject:
+                  value: {error: id must be a UUID and repo_url must be a public HTTPS URL}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/DatabaseError'
+        '503':
+          $ref: '#/components/responses/DatabaseTimeout'
+  /internal/v1/watcher/projects:
+    get:
+      tags: [Наблюдения за исходниками]
+      operationId: listWatcherProjects
+      summary: Получить активные проекты
+      description: Возвращает проекты с enabled=true в порядке UUID. Если активных проектов нет, возвращает пустой массив.
+      security:
+        - WatcherBearer: []
+      responses:
+        '200':
+          description: Активные проекты и последнее состояние, известное Engine.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Project'
+              example:
+                - id: 0812951a-c377-4045-8c09-83595bd5222d
+                  repo_url: https://github.com/ratcker/openpage-sandbox.git
+                  observed_sha: null
+                  observed_revision: 0
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/DatabaseError'
+        '503':
+          $ref: '#/components/responses/DatabaseTimeout'
+  /internal/v1/watcher/projects/{id}/observations:
+    post:
+      tags: [Наблюдения за исходниками]
+      operationId: recordObservation
+      summary: Сообщить о наблюдении HEAD ветки openpage
+      description: >
+        При изменении SHA увеличивает ревизию и записывает событие в той же транзакции.
+        Совпадающий HEAD и точный повтор перехода к текущей ревизии возвращают 200
+        без нового события. Устаревшее состояние, включая возврат HEAD к прежнему SHA
+        после нескольких изменений, возвращает 409.
+      security:
+        - WatcherBearer: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: UUID ранее зарегистрированного проекта.
+          schema:
+            $ref: '#/components/schemas/ProjectID'
+          example: 0812951a-c377-4045-8c09-83595bd5222d
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Observation'
+            examples:
+              first:
+                summary: Первое наблюдение
+                value:
+                  previous_sha: null
+                  previous_revision: 0
+                  sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              changed:
+                summary: Обновление известного HEAD
+                value:
+                  previous_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                  previous_revision: 1
+                  sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+      responses:
+        '200':
+          $ref: '#/components/responses/ProjectState'
+          description: Наблюдение принято. Ответ содержит текущее состояние проекта.
+        '400':
+          description: Некорректный UUID, JSON, SHA или ожидаемая ревизия.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                malformed:
+                  value: {error: invalid JSON request}
+                invalidId:
+                  value: {error: id must be a UUID}
+                invalidObservation:
+                  value: {error: expected a nonnegative previous_revision and valid Git SHA values}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: Проект с таким UUID не найден.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example: {error: project not found}
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/DatabaseError'
+        '503':
+          $ref: '#/components/responses/DatabaseTimeout'
+components:
+  securitySchemes:
+    PlatformBearer:
+      type: http
+      scheme: bearer
+      description: Значение ENGINE_PLATFORM_TOKEN без префикса Bearer.
+    WatcherBearer:
+      type: http
+      scheme: bearer
+      description: Значение ENGINE_WATCHER_TOKEN без префикса Bearer.
+  schemas:
+    ProjectID:
+      type: string
+      format: uuid
+      pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+    RepoURL:
+      type: string
+      format: uri
+      description: HTTPS URL с DNS-именем и путём. Если указан порт, он должен быть 443. Учетные данные, параметры и фрагмент не поддерживаются.
+    SHA:
+      type: string
+      pattern: '^([0-9a-f]{40}|[0-9a-f]{64})$'
+      description: Git SHA из 40 или 64 строчных шестнадцатеричных символов.
+    NullableSHA:
+      anyOf:
+        - $ref: '#/components/schemas/SHA'
+        - type: 'null'
+    Revision:
+      type: integer
+      format: int64
+      minimum: 0
+    ProjectRegistration:
+      type: object
+      additionalProperties: false
+      required: [id, repo_url]
+      properties:
+        id:
+          $ref: '#/components/schemas/ProjectID'
+        repo_url:
+          $ref: '#/components/schemas/RepoURL'
+        enabled:
+          type: [boolean, 'null']
+          default: true
+          description: При отсутствии поля или значении null проект считается активным.
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, repo_url, observed_sha, observed_revision]
+      properties:
+        id:
+          $ref: '#/components/schemas/ProjectID'
+        repo_url:
+          $ref: '#/components/schemas/RepoURL'
+        observed_sha:
+          $ref: '#/components/schemas/NullableSHA'
+        observed_revision:
+          $ref: '#/components/schemas/Revision'
+    Observation:
+      type: object
+      additionalProperties: false
+      required: [previous_revision, sha]
+      properties:
+        previous_sha:
+          $ref: '#/components/schemas/NullableSHA'
+          description: Последний SHA из состояния проекта. Отсутствие поля эквивалентно null.
+        previous_revision:
+          $ref: '#/components/schemas/Revision'
+          description: Последняя ревизия из состояния проекта.
+        sha:
+          $ref: '#/components/schemas/SHA'
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string
+  responses:
+    ProjectState:
+      description: Текущее состояние проекта.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Project'
+          example:
+            id: 0812951a-c377-4045-8c09-83595bd5222d
+            repo_url: https://github.com/ratcker/openpage-sandbox.git
+            observed_sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+            observed_revision: 1
+    Unauthorized:
+      description: Сервисный токен отсутствует или не подходит для этого маршрута.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+          example: Bearer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example: {error: unauthorized}
+    Conflict:
+      description: Конфигурация или ожидаемое состояние не совпадает с сохранённым либо наблюдение отправлено для отключённого проекта.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example: {error: project configuration or observed state conflicts}
+    DatabaseError:
+      description: Запрос к базе данных завершился ошибкой.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example: {error: database request failed}
+    DatabaseTimeout:
+      description: Превышен тайм-аут запроса к базе данных.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example: {error: database request timed out}

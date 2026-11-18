@@ -29,6 +29,7 @@ frontend/coverage/
 /notes/*
 
 .env
+/engine/*/target/
 *.local
 
 .idea/

@@ -1,0 +1,11 @@
+**
+!go.mod
+!go.sum
+!engine-api/
+!engine-api/*.go
+!engine-api/internal/
+!engine-api/internal/**
+**/.git
+**/.env*
+**/target
+**/*_test.go

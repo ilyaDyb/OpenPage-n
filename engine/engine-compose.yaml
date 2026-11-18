@@ -1,0 +1,50 @@
+name: openpage-engine
+
+services:
+  engine-api:
+    build:
+      context: .
+      dockerfile: engine-api/Dockerfile
+    environment:
+      ENGINE_HTTP_ADDR: "0.0.0.0:4444"
+      ENGINE_DATABASE_URL: ${ENGINE_DATABASE_URL:?set ENGINE_DATABASE_URL}
+      ENGINE_PLATFORM_TOKEN: ${ENGINE_PLATFORM_TOKEN:?set ENGINE_PLATFORM_TOKEN}
+      ENGINE_WATCHER_TOKEN: ${ENGINE_WATCHER_TOKEN:?set ENGINE_WATCHER_TOKEN}
+      ENGINE_DOCS_ENABLED: ${ENGINE_DOCS_ENABLED:-true}
+    ports:
+      - "127.0.0.1:4444:4444"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  migrate:
+    image: migrate/migrate:v4.17.1
+    entrypoint: ["/bin/sh", "-c"]
+    command: ['exec migrate -path /migrations -database "$$ENGINE_DATABASE_URL" up']
+    environment:
+      ENGINE_DATABASE_URL: ${ENGINE_DATABASE_URL:?set ENGINE_DATABASE_URL}
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    volumes:
+      - control-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+volumes:
+  control-db:
