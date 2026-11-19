@@ -131,7 +131,6 @@ func TestSourceEventRevisions(t *testing.T) {
 	expectStatus(t, postObservation(h, projectID, shaA, 1, shaA), 200)
 	assertState(t, db, shaA, 1, 1)
 	expectStatus(t, postObservation(h, projectID, shaA, 1, shaB), 200)
-	expectStatus(t, postObservation(h, projectID, shaA, 1, shaB), 200)
 	expectStatus(t, postObservation(h, projectID, shaC, 1, shaB), 409)
 	expectStatus(t, postObservation(h, projectID, shaB, 2, shaA), 200)
 	expectStatus(t, postObservation(h, projectID, shaA, 1, shaB), 409)

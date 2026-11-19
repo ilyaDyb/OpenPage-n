@@ -1,95 +1,62 @@
 package tests
 
 import (
+	"context"
 	"errors"
-	"os"
+	"net/http"
+	"net/http/httptest"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
-func buildWatcher(t *testing.T) string {
-	t.Helper()
+func TestCLI(t *testing.T) {
 	binary := filepath.Join(t.TempDir(), "source-watcher")
-	cmd := exec.Command("go", "build", "-o", binary, "..")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build Source Watcher: %v\n%s", err, output)
+	build := exec.Command("go", "build", "-o", binary, "..")
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build Source Watcher: %v\n%s", err, out)
 	}
-	return binary
-}
 
-func TestCLIOnceAndJSON(t *testing.T) {
-	binary := buildWatcher(t)
-	path := filepath.Join(t.TempDir(), "projects.json")
-	data := `[
-  {"id":"alpha","repo_url":"https://example.com/alpha.git"},
-  {"id":"beta","repo_url":"https://example.com/beta.git","last_sha":"cccccccccccccccccccccccccccccccccccccccc"}
-]`
-	if err := os.WriteFile(path, []byte(data), 0600); err != nil {
-		t.Fatal(err)
-	}
-	fakeGit(t, `case "$8" in
-  *alpha.git) sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
-  *beta.git) sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
-  *) exit 99 ;;
-esac
-printf '%s\trefs/heads/openpage\n' "$sha"`)
+	t.Run("single poll", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Method != "GET" || r.URL.Path != listPath || r.Header.Get("Authorization") != "Bearer "+testToken {
+				t.Error("unexpected project list request")
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write([]byte("[]"))
+		}))
+		defer server.Close()
+		t.Setenv("ENGINE_API_URL", server.URL)
+		t.Setenv("ENGINE_WATCHER_TOKEN", testToken)
 
-	cmd := exec.Command(binary, "-projects", path, "-interval", "45s", "-timeout", "5s", "-once")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("one-time check failed: %v\n%s", err, output)
-	}
-	logs := string(output)
-	if !strings.Contains(logs, "msg=starting projects=2 interval=45s timeout=5s once=true") ||
-		!strings.Contains(logs, "msg=initial project_id=alpha sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") ||
-		!strings.Contains(logs, "msg=changed project_id=beta previous_sha=cccccccccccccccccccccccccccccccccccccccc sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") ||
-		!strings.Contains(logs, "msg=stopped") {
-		t.Fatalf("unexpected CLI output:\n%s", logs)
-	}
-}
-
-func TestCLIRejectsInvalidInput(t *testing.T) {
-	binary := buildWatcher(t)
-	dir := t.TempDir()
-	validPath := filepath.Join(dir, "valid.json")
-	if err := os.WriteFile(validPath, []byte(`[{"id":"alpha","repo_url":"https://example.com/a.git"}]`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	duplicatePath := filepath.Join(dir, "duplicate.json")
-	if err := os.WriteFile(duplicatePath, []byte(`[{"id":"alpha"},{"id":"alpha"}]`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	unknownPath := filepath.Join(dir, "unknown.json")
-	if err := os.WriteFile(unknownPath, []byte(`[{"id":"alpha","repo_ur1":"https://example.com/a.git"}]`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	extraPath := filepath.Join(dir, "extra.json")
-	if err := os.WriteFile(extraPath, []byte(`[] []`), 0600); err != nil {
-		t.Fatal(err)
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, binary, "-interval", "45s", "-timeout", "5s", "-once")
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), "interval=45s timeout=5s once=true") {
+			t.Fatalf("one-time check failed: %v\n%s", err, out)
+		}
+	})
 
 	for _, test := range []struct {
-		name string
-		args []string
+		name, apiURL, token string
+		args                []string
 	}{
-		{"missing projects", nil},
-		{"zero interval", []string{"-projects", validPath, "-interval", "0"}},
-		{"negative timeout", []string{"-projects", validPath, "-timeout", "-1s"}},
-		{"extra argument", []string{"-projects", validPath, "extra"}},
-		{"missing file", []string{"-projects", filepath.Join(dir, "missing.json")}},
-		{"old repo flag", []string{"-repo", "https://example.com/a.git"}},
-		{"old previous flag", []string{"-projects", validPath, "-previous", testSHA}},
-		{"duplicate IDs", []string{"-projects", duplicatePath}},
-		{"unknown JSON field", []string{"-projects", unknownPath}},
-		{"extra JSON value", []string{"-projects", extraPath}},
+		{name: "missing token"},
+		{name: "bad API URL", apiURL: "file:///tmp/api", token: testToken},
+		{name: "zero interval", token: testToken, args: []string{"-interval", "0"}},
+		{name: "removed JSON input", token: testToken, args: []string{"-projects", "projects.json"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			output, err := exec.Command(binary, test.args...).CombinedOutput()
+			t.Setenv("ENGINE_API_URL", test.apiURL)
+			t.Setenv("ENGINE_WATCHER_TOKEN", test.token)
+			out, err := exec.Command(binary, test.args...).CombinedOutput()
 			var exitErr *exec.ExitError
 			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
-				t.Fatalf("expected exit code 2, got %v: %s", err, output)
+				t.Fatalf("expected exit code 2, got %v: %s", err, out)
 			}
 		})
 	}

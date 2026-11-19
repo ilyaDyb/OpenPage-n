@@ -17,6 +17,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "-healthcheck" {
+		if !healthy() {
+			os.Exit(1)
+		}
+		return
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx); err != nil {
@@ -81,6 +88,26 @@ func run(ctx context.Context) error {
 		return err
 	}
 	return nil
+}
+
+func healthy() bool {
+	req, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:4444/internal/v1/watcher/projects", nil)
+	if err != nil {
+		return false
+	}
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("ENGINE_WATCHER_TOKEN"))
+	client := http.Client{
+		Timeout: 6 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
 }
 
 func validToken(token string) bool {

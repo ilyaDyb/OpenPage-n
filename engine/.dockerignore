@@ -5,6 +5,10 @@
 !engine-api/*.go
 !engine-api/internal/
 !engine-api/internal/**
+!source-watcher/
+!source-watcher/*.go
+!source-watcher/internal/
+!source-watcher/internal/*.go
 **/.git
 **/.env*
 **/target

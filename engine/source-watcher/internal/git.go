@@ -15,8 +15,6 @@ import (
 const branch = "refs/heads/openpage"
 const defaultGitTimeout = 30 * time.Second
 
-var ErrBranchNotFound = errors.New("branch refs/heads/openpage not found")
-
 // RemoteSHA читает SHA ветки опенпейч без клонирования репозитория.
 func RemoteSHA(ctx context.Context, repository string) (string, error) {
 	if err := validateURL(repository); err != nil {
@@ -50,20 +48,15 @@ func RemoteSHA(ctx context.Context, repository string) (string, error) {
 		}
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 2 {
-			return "", ErrBranchNotFound
+			return "", errors.New("branch refs/heads/openpage not found")
 		}
 		return "", fmt.Errorf("git ls-remote failed: %w", err)
 	}
-	if len(output) == 0 {
+	sha, ref, found := strings.Cut(strings.TrimSuffix(string(output), "\n"), "\t")
+	if !found || ref != branch || !validSHA(sha) {
 		return "", errors.New("invalid git ls-remote response")
 	}
-
-	line := strings.TrimSuffix(string(output), "\n")
-	parts := strings.Split(line, "\t")
-	if len(parts) != 2 || parts[1] != branch || !validSHA(parts[0]) {
-		return "", errors.New("invalid git ls-remote response")
-	}
-	return parts[0], nil
+	return sha, nil
 }
 
 func validateURL(repository string) error {
@@ -83,10 +76,8 @@ func validSHA(sha string) bool {
 		return false
 	}
 	for _, c := range sha {
-		if c < '0' || c > '9' {
-			if c < 'a' || c > 'f' {
-				return false
-			}
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
 		}
 	}
 	return true
